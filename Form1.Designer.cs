@@ -28,6 +28,7 @@
         /// </summary>
         private void InitializeComponent()
         {
+            this.components = new System.ComponentModel.Container();
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(Form1));
             this.grbtitle = new System.Windows.Forms.GroupBox();
             this.pictureBox1 = new System.Windows.Forms.PictureBox();
@@ -40,6 +41,8 @@
             this.btnunin = new System.Windows.Forms.Button();
             this.grbsysinfo = new System.Windows.Forms.GroupBox();
             this.lblwin = new System.Windows.Forms.Label();
+            this.btnTools = new System.Windows.Forms.Button();
+            this.toolTip1 = new System.Windows.Forms.ToolTip(this.components);
             this.grbtitle.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
             this.grbinfo.SuspendLayout();
@@ -78,7 +81,7 @@
             this.lbltitle.Name = "lbltitle";
             this.lbltitle.Size = new System.Drawing.Size(400, 32);
             this.lbltitle.TabIndex = 0;
-            this.lbltitle.Text = "BKAV UNINSTALLER";
+            this.lbltitle.Text = "GỠ CÀI BKAV";
             // 
             // grbinfo
             // 
@@ -92,7 +95,7 @@
             this.grbinfo.Size = new System.Drawing.Size(660, 90);
             this.grbinfo.TabIndex = 1;
             this.grbinfo.TabStop = false;
-            this.grbinfo.Text = "📁 Installation Info";
+            this.grbinfo.Text = "📁 Thông Tin Cài Đặt";
             // 
             // label1
             // 
@@ -103,7 +106,7 @@
             this.label1.Name = "label1";
             this.label1.Size = new System.Drawing.Size(65, 15);
             this.label1.TabIndex = 1;
-            this.label1.Text = "Location:";
+            this.label1.Text = "Đường dẫn:";
             // 
             // txtinsdrect
             // 
@@ -129,7 +132,7 @@
             this.grbfunct.Size = new System.Drawing.Size(660, 75);
             this.grbfunct.TabIndex = 2;
             this.grbfunct.TabStop = false;
-            this.grbfunct.Text = "⚙️ Actions";
+            this.grbfunct.Text = "⚙️ Thao Tác";
             // 
             // btnremove
             // 
@@ -144,7 +147,7 @@
             this.btnremove.Name = "btnremove";
             this.btnremove.Size = new System.Drawing.Size(295, 35);
             this.btnremove.TabIndex = 1;
-            this.btnremove.Text = "🗑️  Delete Leftover";
+            this.btnremove.Text = "🗑️  Xóa Tàn Dư";
             this.btnremove.UseVisualStyleBackColor = false;
             this.btnremove.Click += new System.EventHandler(this.btnremove_Click);
             // 
@@ -161,7 +164,7 @@
             this.btnunin.Name = "btnunin";
             this.btnunin.Size = new System.Drawing.Size(295, 35);
             this.btnunin.TabIndex = 0;
-            this.btnunin.Text = "🔧  Uninstall BKAV";
+            this.btnunin.Text = "🔧  Gỡ Cài BKAV";
             this.btnunin.UseVisualStyleBackColor = false;
             this.btnunin.Click += new System.EventHandler(this.btnunin_Click);
             // 
@@ -169,6 +172,7 @@
             // 
             this.grbsysinfo.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(240)))), ((int)(((byte)(240)))), ((int)(((byte)(240)))));
             this.grbsysinfo.Controls.Add(this.lblwin);
+            this.grbsysinfo.Controls.Add(this.btnTools);
             this.grbsysinfo.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.grbsysinfo.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(45)))), ((int)(((byte)(45)))), ((int)(((byte)(48)))));
             this.grbsysinfo.Location = new System.Drawing.Point(10, 259);
@@ -176,7 +180,7 @@
             this.grbsysinfo.Size = new System.Drawing.Size(660, 65);
             this.grbsysinfo.TabIndex = 1;
             this.grbsysinfo.TabStop = false;
-            this.grbsysinfo.Text = "💻 System Info";
+            this.grbsysinfo.Text = "💻 Thông Tin Hệ Thống";
             // 
             // lblwin
             // 
@@ -189,7 +193,22 @@
             this.lblwin.TabIndex = 0;
             this.lblwin.Text = "Loading...";
             this.lblwin.Click += new System.EventHandler(this.lblwin_Click);
-            // 
+            //
+            // btnTools
+            //
+            this.btnTools.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(240)))), ((int)(((byte)(240)))), ((int)(((byte)(240)))));
+            this.btnTools.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(200)))), ((int)(((byte)(200)))), ((int)(((byte)(200)))));
+            this.btnTools.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.btnTools.Font = new System.Drawing.Font("Segoe UI", 8.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.btnTools.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(45)))), ((int)(((byte)(45)))), ((int)(((byte)(48)))));
+            this.btnTools.Location = new System.Drawing.Point(540, 20);
+            this.btnTools.Name = "btnTools";
+            this.btnTools.Size = new System.Drawing.Size(110, 28);
+            this.btnTools.TabIndex = 1;
+            this.btnTools.Text = "🛠️ Công cụ";
+            this.btnTools.UseVisualStyleBackColor = false;
+            this.btnTools.Click += new System.EventHandler(this.btnTools_Click);
+            //
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
@@ -201,6 +220,7 @@
             this.Controls.Add(this.grbinfo);
             this.Controls.Add(this.grbtitle);
             this.Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.MaximizeBox = false;
             this.MaximumSize = new System.Drawing.Size(696, 373);
@@ -208,7 +228,11 @@
             this.MinimumSize = new System.Drawing.Size(696, 373);
             this.Name = "Form1";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "BKAV UNINSTALLER TOOL";
+            this.Text = "CÔNG CỤ GỠ CÀI BKAV";
+            this.toolTip1.SetToolTip(this.btnunin, "Chạy công cụ gỡ cài đặt chính thức của BKAV");
+            this.toolTip1.SetToolTip(this.btnremove, "Xóa thư mục, registry, shortcut và biến môi trường còn sót lại của BKAV");
+            this.toolTip1.SetToolTip(this.btnTools, "Mở Registry Finder / Comparator và các tùy chọn khác");
+            this.toolTip1.SetToolTip(this.lblwin, "Nhấn để mở menu Công cụ");
             this.Load += new System.EventHandler(this.Form1_Load);
             this.grbtitle.ResumeLayout(false);
             this.grbtitle.PerformLayout();
@@ -236,6 +260,8 @@
         private System.Windows.Forms.Label lblwin;
         private System.Windows.Forms.Button btnremove;
         private System.Windows.Forms.PictureBox pictureBox1;
+        private System.Windows.Forms.Button btnTools;
+        private System.Windows.Forms.ToolTip toolTip1;
     }
 }
 
