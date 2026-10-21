@@ -1,8 +1,12 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Management;
+using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -10,1341 +14,1177 @@ namespace WindowsFormsApp1
 {
     public partial class Form1 : Form
     {
-        // Constants - Paths & Messages
-        private const string BKAV_PRO_FOLDER = "BkavPro";
-        private const string BKAV_CORP_FOLDER = "Bkav Corporation";
-        private const string BKAV_UNINSTALLER = "BkavUnst.exe";
+        // ── Constants ────────────────────────────────────────────────────────────
+        private const string BKAV_PRO_FOLDER    = "BkavPro";
+        private const string BKAV_CORP_FOLDER   = "Bkav Corporation";
+        private const string BKAV_UNINSTALLER   = "BkavUnst.exe";
         private const string BKAV_NOT_INSTALLED = "Bạn đang không dùng BKAV!";
-        private const string BKAV_REMOVED = "Bạn đã gỡ BKAV Pro. Vui lòng bấm nút Delete Leftover để xoá thư mục còn xót";
 
-        // Constants - Colors (RGB)
-        private static readonly int[] BTN_UNINSTALL_NORMAL = { 40, 167, 69 };
-        private static readonly int[] BTN_UNINSTALL_HOVER = { 28, 140, 80 };
-        private static readonly int[] BTN_DELETE_NORMAL = { 220, 53, 69 };
-        private static readonly int[] BTN_DELETE_HOVER = { 200, 40, 55 };
+        /// <summary>
+        /// Tập hợp keywords dùng để nhận diện entry liên quan BKAV.
+        /// Thêm biến thể thực tế: bkavsrv, bkavss, bkavwsc, bkav2, v-safe, bkav pro.
+        /// </summary>
+        internal static readonly string[] BkavKeywords =
+        {
+            "bkav",
+            "v-smart",
+            "vsmart",
+            "bkavsystem",
+            "bkavutil",
+            "bka.exe",
+            "bkavsrv",       // service BkavSrv
+            "bkavss",        // service BkavSS
+            "bkavwsc",       // Windows Security Center hook
+            "bkav2",         // variant tên file cũ
+            "v-safe",        // thư viện scan của BKAV
+            "bkav pro",      // display name trong Uninstall
+            "bkaventerprise" // enterprise variant
+        };
 
-        // Cached paths
+        // ── Button colours ───────────────────────────────────────────────────────
+        private static readonly System.Drawing.Color BTN_UNINSTALL_NORMAL = System.Drawing.Color.FromArgb(40,  167, 69);
+        private static readonly System.Drawing.Color BTN_UNINSTALL_HOVER  = System.Drawing.Color.FromArgb(28,  140, 80);
+        private static readonly System.Drawing.Color BTN_DELETE_NORMAL    = System.Drawing.Color.FromArgb(220, 53,  69);
+        private static readonly System.Drawing.Color BTN_DELETE_HOVER     = System.Drawing.Color.FromArgb(200, 40,  55);
+        private static readonly System.Drawing.Color BTN_TOOLS_NORMAL     = System.Drawing.Color.FromArgb(240, 240, 240);
+        private static readonly System.Drawing.Color BTN_TOOLS_HOVER      = System.Drawing.Color.FromArgb(220, 220, 220);
+
+        // ── State ────────────────────────────────────────────────────────────────
         private string _bkavProPath;
         private string _bkavCorpPath;
 
+        // ── Registry views ──────────────────────────────────────────────────────
+        // Mở tường minh view "gốc" (64-bit trên Windows 64-bit) để các lệnh Registry.LocalMachine/
+        // Registry.ClassesRoot không bị WOW64 redirect sang Wow6432Node, bỏ sót entry gốc
+        // (CLSID/AppID dạng GUID...). Trên Windows 32-bit thì RegistryView.Registry64 không
+        // tồn tại (ném PlatformNotSupportedException) nên phải kiểm tra OS trước.
+        private static readonly RegistryKey HKLM64 = OpenNativeBaseKey(RegistryHive.LocalMachine);
+        private static readonly RegistryKey HKCR64 = OpenNativeBaseKey(RegistryHive.ClassesRoot);
+
+        private static RegistryKey OpenNativeBaseKey(RegistryHive hive)
+        {
+            var view = Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Registry32;
+            return RegistryKey.OpenBaseKey(hive, view);
+        }
+
+        // ── Constructor ──────────────────────────────────────────────────────────
         public Form1()
         {
             InitializeComponent();
         }
 
+        // ════════════════════════════════════════════════════════════════════════
+        //  INITIALISATION
+        // ════════════════════════════════════════════════════════════════════════
+
         private void Form1_Load(object sender, EventArgs e)
         {
-            this.ControlBox = false;
             lblwin.Text = GetOSInfo();
             ApplyButtonStyles();
-
-            // Check if BKAV is installed
             InitializeBkavPaths();
+            CheckForUpdatesInBackground(showUpToDateMessage: false);
 
-            // If BKAV is installed (has uninstaller), show as usual
-            if (File.Exists(Path.Combine(_bkavProPath, BKAV_UNINSTALLER)))
+            bool uninstallerExists = File.Exists(Path.Combine(_bkavProPath, BKAV_UNINSTALLER));
+            bool hasLeftovers      = !uninstallerExists && HasBkavLeftovers();
+
+            if (uninstallerExists)
             {
                 txtinsdrect.Text = Path.Combine(_bkavProPath, BKAV_UNINSTALLER);
-                btnunin.Enabled = true;
+                btnunin.Enabled  = true;
                 btnunin.PerformClick();
             }
-            // If BKAV is not installed but there are leftover files/registry
-            else if (HasBkavLeftovers())
+            else if (hasLeftovers)
             {
-                txtinsdrect.Text = "Phát hiện tàn dư BKAV. Đang xóa...";
+                txtinsdrect.Text  = "Phát hiện tàn dư BKAV. Nhấn 'Xóa Tàn Dư' để xóa.";
                 btnremove.Enabled = true;
-                // Use BeginInvoke to run on the UI thread after Load completes
-                this.BeginInvoke(new Action(() => btnremove.PerformClick()));
             }
-            // If no BKAV at all (not installed and no leftovers)
             else
             {
-                MessageBox.Show(BKAV_NOT_INSTALLED, "Thông Báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(BKAV_NOT_INSTALLED, "Thông Báo",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Environment.Exit(0);
             }
         }
 
         private void ApplyButtonStyles()
         {
-            SetButtonHoverEffect(btnunin, BTN_UNINSTALL_NORMAL, BTN_UNINSTALL_HOVER);
-            SetButtonHoverEffect(btnremove, BTN_DELETE_NORMAL, BTN_DELETE_HOVER);
+            SetButtonHoverEffect(btnunin,   BTN_UNINSTALL_NORMAL, BTN_UNINSTALL_HOVER);
+            SetButtonHoverEffect(btnremove, BTN_DELETE_NORMAL,    BTN_DELETE_HOVER);
+            SetButtonHoverEffect(btnTools,  BTN_TOOLS_NORMAL,     BTN_TOOLS_HOVER);
         }
 
-        private void SetButtonHoverEffect(Button btn, int[] normalColor, int[] hoverColor)
+        private static void SetButtonHoverEffect(Button btn,
+            System.Drawing.Color normalColor, System.Drawing.Color hoverColor)
         {
-            var normalBrush = System.Drawing.Color.FromArgb(normalColor[0], normalColor[1], normalColor[2]);
-            var hoverBrush = System.Drawing.Color.FromArgb(hoverColor[0], hoverColor[1], hoverColor[2]);
-
-            btn.MouseEnter += (s, e) => btn.BackColor = hoverBrush;
-            btn.MouseLeave += (s, e) => btn.BackColor = normalBrush;
+            btn.BackColor   = normalColor;
+            btn.MouseEnter += (s, e) => btn.BackColor = hoverColor;
+            btn.MouseLeave += (s, e) => btn.BackColor = normalColor;
         }
 
-        private string GetOSInfo()
+        private static string GetOSInfo()
         {
             try
             {
-                using (var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_OperatingSystem"))
+                using (var searcher = new ManagementObjectSearcher(
+                    "SELECT Caption,OSArchitecture FROM Win32_OperatingSystem"))
+                using (var results = searcher.Get())
                 {
-                    var results = searcher.Get();
-                    if (results.Count > 0)
+                    foreach (ManagementObject obj in results)
                     {
-                        ManagementObject osObj = null;
-                        foreach (ManagementObject obj in results)
+                        using (obj)
                         {
-                            osObj = obj;
-                            break;
-                        }
-
-                        if (osObj != null)
-                        {
-                            string osInfo = $"{osObj["Caption"]} - {osObj["OSArchitecture"]}";
-                            return osInfo
+                            return $"{obj["Caption"]} - {obj["OSArchitecture"]}"
                                 .Replace("NT 5.1.2600", "XP")
                                 .Replace("NT 5.2.3790", "Server 2003");
                         }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"GetOSInfo Error: {ex.Message}");
-            }
-            return "Unknown OS";
+            catch (Exception ex) { Debug.WriteLine($"GetOSInfo: {ex.Message}"); }
+            return "Không xác định được hệ điều hành";
         }
 
         private void InitializeBkavPaths()
         {
-            string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-            _bkavProPath = Path.Combine(programFilesX86, BKAV_PRO_FOLDER);
-            _bkavCorpPath = Path.Combine(programFilesX86, BKAV_CORP_FOLDER);
+            string pf86    = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            _bkavProPath   = Path.Combine(pf86, BKAV_PRO_FOLDER);
+            _bkavCorpPath  = Path.Combine(pf86, BKAV_CORP_FOLDER);
         }
+
+        // ════════════════════════════════════════════════════════════════════════
+        //  DETECTION
+        // ════════════════════════════════════════════════════════════════════════
 
         private bool HasBkavLeftovers()
         {
-            // Check for leftover folders
-            if (Directory.Exists(_bkavProPath) || Directory.Exists(_bkavCorpPath))
-                return true;
-
-            // Check for registry entries
-            if (HasBkavRegistryEntries())
-                return true;
-
-            // Check for startup shortcuts
-            if (HasBkavStartupShortcuts())
-                return true;
-
-            return false;
+            return Directory.Exists(_bkavProPath)
+                || Directory.Exists(_bkavCorpPath)
+                || HasBkavRegistryEntries()
+                || HasBkavStartupShortcuts();
         }
 
         private bool HasBkavRegistryEntries()
         {
             try
             {
-                // Check main BKAV keys
-                using (var key = Registry.LocalMachine.OpenSubKey(@"Software\BKAV"))
-                {
-                    if (key != null) return true;
-                }
-
-                using (var key = Registry.LocalMachine.OpenSubKey(@"Software\Wow6432Node\BKAV"))
-                {
-                    if (key != null) return true;
-                }
+                // 1. Direct well-known keys
+                foreach (var k in new[] { @"Software\BKAV", @"Software\Wow6432Node\BKAV" })
+                    using (var key = Registry.LocalMachine.OpenSubKey(k))
+                        if (key != null) return true;
 
                 using (var key = Registry.CurrentUser.OpenSubKey(@"Software\BKAV"))
-                {
                     if (key != null) return true;
-                }
 
-                // Check for BKAV service
-                using (var key = Registry.LocalMachine.OpenSubKey(@"System\CurrentControlSet\Services"))
+                // 2. Services
+                if (AnySubKeyMatchesKeyword(Registry.LocalMachine,
+                    @"System\CurrentControlSet\Services")) return true;
+
+                // 3. Uninstall entries (HKLM 32 + 64 bit)
+                foreach (var p in new[]
                 {
-                    if (key != null)
-                    {
-                        foreach (var serviceName in key.GetSubKeyNames())
-                        {
-                            if (serviceName.ToLower().Contains("bkav") || serviceName.ToLower().Contains("vsmart"))
-                                return true;
-                        }
-                    }
-                }
-
-                // Check for Uninstall entries
-                using (var key = Registry.LocalMachine.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall"))
-                {
-                    if (key != null)
-                    {
-                        foreach (var appName in key.GetSubKeyNames())
-                        {
-                            if (appName.ToLower().Contains("bkav"))
-                                return true;
-                        }
-                    }
-                }
+                    @"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                    @"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+                })
+                    if (AnySubKeyMatchesKeyword(Registry.LocalMachine, p)) return true;
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"HasBkavRegistryEntries Error: {ex.Message}");
-            }
-
+            catch (Exception ex) { Debug.WriteLine($"HasBkavRegistryEntries: {ex.Message}"); }
             return false;
         }
 
-        private bool HasBkavStartupShortcuts()
+        /// <summary>Returns true if any direct child subkey name matches a BKAV keyword.</summary>
+        private static bool AnySubKeyMatchesKeyword(RegistryKey baseKey, string path)
+        {
+            try
+            {
+                using (var key = baseKey.OpenSubKey(path))
+                    if (key != null)
+                        foreach (var name in key.GetSubKeyNames())
+                            if (ContainsBkavKeyword(name)) return true;
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool HasBkavStartupShortcuts()
         {
             try
             {
                 string startupPath = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    @"Microsoft\Windows\Start Menu\Programs\Startup"
-                );
+                    @"Microsoft\Windows\Start Menu\Programs\Startup");
 
                 if (Directory.Exists(startupPath))
-                {
                     foreach (var file in Directory.GetFiles(startupPath, "*.lnk"))
-                    {
-                        if (file.ToLower().Contains("bkav") || file.ToLower().Contains("v-smart"))
-                            return true;
-                    }
-                }
+                        if (ContainsBkavKeyword(Path.GetFileName(file))) return true;
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"HasBkavStartupShortcuts Error: {ex.Message}");
-            }
-
+            catch (Exception ex) { Debug.WriteLine($"HasBkavStartupShortcuts: {ex.Message}"); }
             return false;
         }
+
+        // ════════════════════════════════════════════════════════════════════════
+        //  BUTTON HANDLERS
+        // ════════════════════════════════════════════════════════════════════════
 
         private void btnunin_Click(object sender, EventArgs e)
         {
             try
             {
-                string uninstallerPath = Path.Combine(_bkavProPath, BKAV_UNINSTALLER);
-
-                if (File.Exists(uninstallerPath))
+                string path = Path.Combine(_bkavProPath, BKAV_UNINSTALLER);
+                if (File.Exists(path))
                 {
-                    Process.Start(uninstallerPath);
-                    btnunin.Enabled = false;
+                    var process = Process.Start(path);
+                    btnunin.Enabled   = false;
+                    btnremove.Enabled = true;
+                    // Process.Start() chỉ MỞ trình gỡ cài đặt gốc, không chờ nó chạy xong —
+                    // chưa thể coi là "đã gỡ" ngay lúc này (BkavUnst.exe còn hiện khảo sát,
+                    // captcha, hỏi xác nhận... trước khi thực sự gỡ). Chờ nó thoát ở luồng nền
+                    // rồi mới cập nhật trạng thái cho đúng.
+                    txtinsdrect.Text = "Đang chạy trình gỡ cài đặt BKAV gốc (BkavUnst.exe)...";
+
+                    if (process != null)
+                    {
+                        ThreadPool.QueueUserWorkItem(_ =>
+                        {
+                            try { process.WaitForExit(); } catch { }
+                            if (!this.IsDisposed)
+                                this.Invoke(new Action(() =>
+                                    txtinsdrect.Text =
+                                        "Đã đóng trình gỡ cài đặt BKAV gốc. Nhấn 'Xóa Tàn Dư' để xóa phần còn lại."));
+                        });
+                    }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Lỗi: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Lỗi: {ex.Message}", "Lỗi",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
         private void btnremove_Click(object sender, EventArgs e)
         {
-            // Check if there's actually anything to delete
-            if (!Directory.Exists(_bkavProPath) && !Directory.Exists(_bkavCorpPath) && !HasBkavRegistryEntries() && !HasBkavStartupShortcuts())
+            if (!Directory.Exists(_bkavProPath)
+                && !Directory.Exists(_bkavCorpPath)
+                && !HasBkavRegistryEntries()
+                && !HasBkavStartupShortcuts())
             {
-                MessageBox.Show(BKAV_NOT_INSTALLED, "Thông Báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(BKAV_NOT_INSTALLED, "Thông Báo",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Environment.Exit(0);
                 return;
             }
 
-            DialogResult result = MessageBox.Show(
-                "Điều này sẽ xóa:\n" +
-                "• Các thư mục BKAV\n" +
-                "• Các entry Registry của BKAV\n" +
-                "• Các shortcut liên quan\n\n" +
-                "Bạn có chắc chắn?",
-                "Xác Nhận Xóa",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning
-            );
-
-            if (result != DialogResult.Yes)
+            if (MessageBox.Show(
+                    "Điều này sẽ xóa:\n" +
+                    "• Các thư mục BKAV\n" +
+                    "• Các entry Registry của BKAV\n" +
+                    "• Các shortcut khởi động\n" +
+                    "• Biến môi trường PATH của BKAV\n\n" +
+                    "Bạn có chắc chắn?",
+                    "Xác Nhận Xóa",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) != DialogResult.Yes)
                 return;
 
-            try
+            btnremove.Enabled = false;
+
+            var progressForm = new ProgressForm("Đang xóa toàn bộ tàn dư BKAV...");
+            progressForm.Show(this);
+            Application.DoEvents();
+
+            ThreadPool.QueueUserWorkItem(_ =>
             {
-                // Show progress
-                using (var progressForm = new ProgressForm("Đang xóa tất cả BKAV leftover..."))
+                Exception workerException = null;
+                try
                 {
-                    progressForm.Show();
-                    Application.DoEvents();
-
-                    // 1. Delete folders via CMD
-                    progressForm.UpdateStatus("Xóa thư mục BKAV...");
+                    Report(progressForm, "Xóa thư mục BKAV...");
                     DeleteFoldersViaCMD();
-                    Application.DoEvents();
 
-                    // 2. Delete Registry entries
-                    progressForm.UpdateStatus("Xóa Registry entries...");
+                    Report(progressForm, "Xóa Registry entries...");
                     DeleteBkavRegistry();
-                    Application.DoEvents();
 
-                    // 3. Delete startup shortcuts
-                    progressForm.UpdateStatus("Xóa startup shortcuts...");
+                    Report(progressForm, "Xóa startup shortcuts...");
                     DeleteStartupShortcuts();
-                    Application.DoEvents();
 
-                    // 4. Remove from environment variables
-                    progressForm.UpdateStatus("Dọn dẹp environment variables...");
+                    Report(progressForm, "Dọn dẹp environment variables...");
                     CleanEnvironmentVariables();
-                    Application.DoEvents();
-
-                    progressForm.Close();
                 }
+                catch (Exception ex) { workerException = ex; }
+                finally
+                {
+                    this.Invoke(new Action(() =>
+                    {
+                        progressForm.Close();
+                        progressForm.Dispose();
 
-                MessageBox.Show(
-                    "Xóa BKAV leftover thành công!\n\n" +
-                    "Hãy khởi động lại máy để hoàn tất.",
-                    "Thành Công",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information
-                );
-                Application.Exit();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Lỗi: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+                        if (workerException != null)
+                        {
+                            MessageBox.Show($"Lỗi: {workerException.Message}", "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            btnremove.Enabled = true;
+                        }
+                        else
+                        {
+                            MessageBox.Show(
+                                "Xóa tàn dư BKAV thành công!\n\nHãy khởi động lại máy để hoàn tất.",
+                                "Thành Công",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                            Application.Exit();
+                        }
+                    }));
+                }
+            });
         }
+
+        private void Report(ProgressForm form, string message)
+        {
+            if (form.InvokeRequired)
+                form.Invoke(new Action(() => form.UpdateStatus(message)));
+            else
+                form.UpdateStatus(message);
+        }
+
+        // ════════════════════════════════════════════════════════════════════════
+        //  FOLDER DELETION
+        // ════════════════════════════════════════════════════════════════════════
 
         private void DeleteFoldersViaCMD()
         {
             try
             {
-                var procInfo = new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = $"/C rd /s /q \"{_bkavProPath}\" & rd /s /q \"{_bkavCorpPath}\"",
-                    Verb = "runas",
-                    UseShellExecute = true,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                };
+                var args = new List<string>();
+                if (Directory.Exists(_bkavProPath))  args.Add($"rd /s /q \"{_bkavProPath}\"");
+                if (Directory.Exists(_bkavCorpPath)) args.Add($"rd /s /q \"{_bkavCorpPath}\"");
+                if (args.Count == 0) return;
 
-                using (var process = Process.Start(procInfo))
+                using (var p = Process.Start(new ProcessStartInfo
                 {
-                    process?.WaitForExit();
-                }
+                    FileName        = "cmd.exe",
+                    Arguments       = "/C " + string.Join(" & ", args),
+                    UseShellExecute = false,
+                    CreateNoWindow  = true,
+                    WindowStyle     = ProcessWindowStyle.Hidden
+                }))
+                    p?.WaitForExit(30_000);
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteFoldersViaCMD Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteFoldersViaCMD: {ex.Message}"); }
         }
+
+        // ════════════════════════════════════════════════════════════════════════
+        //  REGISTRY CLEANUP — ORCHESTRATOR
+        // ════════════════════════════════════════════════════════════════════════
 
         private void DeleteBkavRegistry()
         {
-            try
-            {
-                // 1. Delete specific BKAV registry paths
-                DeleteFromRegistry(Registry.LocalMachine, @"Software\BKAV");
-                DeleteFromRegistry(Registry.LocalMachine, @"Software\Wow6432Node\BKAV");
-                DeleteFromRegistry(Registry.CurrentUser, @"Software\BKAV");
-                DeleteFromRegistry(Registry.LocalMachine, @"Software\Microsoft\Windows NT\CurrentVersion\Drivers32");
+            // 1. Direct well-known keys
+            DeleteFromRegistry(Registry.LocalMachine, @"Software\BKAV");
+            DeleteFromRegistry(Registry.LocalMachine, @"Software\Wow6432Node\BKAV");
+            DeleteFromRegistry(Registry.CurrentUser,  @"Software\BKAV");
+            DeleteFromRegistry(Registry.LocalMachine,
+                @"Software\Microsoft\Windows NT\CurrentVersion\Drivers32");
 
-                // 2. Search and delete Uninstall entries
-                SearchAndDeleteUninstallEntry();
+            // 2. Uninstall entries
+            SearchAndDeleteUninstallEntry();
 
-                // 3. Search and delete App Paths
-                SearchAndDeleteAppPaths();
+            // 3. App Paths
+            SearchAndDeleteAppPaths();
 
-                // 4. Delete File Associations
-                DeleteFileAssociations();
+            // 4. File Associations
+            DeleteFileAssociations();
 
-                // 5. Delete Services
-                DeleteBkavServices();
+            // 5. Services (CurrentControlSet + ControlSet001/002)
+            DeleteBkavServices();
 
-                // 6. Delete Scheduled Tasks
-                DeleteScheduledTasks();
+            // 6. Scheduled Tasks
+            DeleteScheduledTasks();
 
-                // 7. Delete Run entries
-                DeleteRunEntries();
+            // 7. Run / RunOnce (HKLM + HKCU, 32+64 bit)
+            DeleteRunEntries();
 
-                // 8. Delete Classes associations
-                DeleteClassesAssociations();
+            // 8. Classes associations
+            DeleteClassesAssociations();
 
-                // 9. Delete AppID entries
-                DeleteAppIDEntries();
+            // 9. AppID entries
+            DeleteAppIDEntries();
 
-                // 10. Delete CLSID entries
-                DeleteCLSIDEntries();
+            // 10. CLSID entries (default value, InProcServer32, LocalServer32)
+            DeleteCLSIDEntries();
 
-                // 11. Delete TypeLib entries
-                DeleteTypeLibEntries();
+            // 11. TypeLib entries
+            DeleteTypeLibEntries();
 
-                // 12. Delete Shell Integration
-                DeleteShellIntegration();
+            // 12. Shell context-menu integration
+            DeleteShellIntegration();
 
-                // 13. Delete Recent/MUI Cache
-                DeleteMuiCache();
+            // 13. MUI / BagMRU cache
+            DeleteMuiCache();
 
-                // 14. Delete DownloadManager entries
-                DeleteDownloadManagerEntries();
+            // 14. DownloadManager / AppCompatFlags
+            DeleteDownloadManagerEntries();
 
-                // 15. FINAL PASS - Comprehensive cleanup of any remaining BKAV entries
-                FinalRegistryCleanup();
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteBkavRegistry Error: {ex.Message}");
-            }
+            // 15. Image File Execution Options hijack
+            DeleteIfeoEntries();
+
+            // 16. SafeBoot driver entries
+            DeleteSafeBootEntries();
+
+            // 17. Winlogon Notify hooks
+            DeleteWinlogonNotify();
+
+            // 18. MSI Installer records
+            DeleteInstallerRecords();
+
+            // 19. Final comprehensive pass
+            FinalRegistryCleanup();
+
+            // 20. Windows Security Center AV/Firewall provider registration
+            DeleteSecurityCenterProviders();
+
+            // 21. Shell Extensions "Approved" list (value name = CLSID GUID)
+            DeleteBkavValues(HKLM64, @"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved");
+
+            // 22. Key rời nằm trực tiếp dưới HKLM\SYSTEM (vd: SYSTEM\BkavSR)
+            DeleteBkavSubkeys(Registry.LocalMachine, @"SYSTEM");
+
+            // 23. Dọn tên nhóm BKAV khỏi ServiceGroupOrder\List (REG_MULTI_SZ)
+            CleanServiceGroupOrder(Registry.LocalMachine, @"SYSTEM\CurrentControlSet\Control\ServiceGroupOrder");
+            CleanServiceGroupOrder(Registry.LocalMachine, @"SYSTEM\ControlSet001\Control\ServiceGroupOrder");
         }
 
-        private void DeleteAppIDEntries()
+        // ════════════════════════════════════════════════════════════════════════
+        //  REGISTRY HELPERS
+        // ════════════════════════════════════════════════════════════════════════
+
+        /// <summary>Case-insensitive check against BkavKeywords.</summary>
+        internal static bool ContainsBkavKeyword(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            foreach (var kw in BkavKeywords)
+                if (value.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            return false;
+        }
+
+        private static void DeleteFromRegistry(RegistryKey baseKey, string subKeyPath)
         {
             try
             {
-                // Delete HKEY_CLASSES_ROOT\AppID\*BKAV*
-                DeleteBkavFromPath(Registry.ClassesRoot, @"AppID");
-                DeleteBkavFromPath(Registry.LocalMachine, @"Software\Classes\AppID");
-                DeleteBkavFromPath(Registry.LocalMachine, @"Software\Wow6432Node\Classes\AppID");
+                using (var key = baseKey.OpenSubKey(subKeyPath, writable: true))
+                    if (key == null) return;
+                baseKey.DeleteSubKeyTree(subKeyPath, throwOnMissingSubKey: false);
+                Debug.WriteLine($"Deleted: {subKeyPath}");
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteAppIDEntries Error: {ex.Message}");
-            }
+            catch (UnauthorizedAccessException) { Debug.WriteLine($"Access denied: {subKeyPath}"); }
+            catch (Exception ex)               { Debug.WriteLine($"Error deleting {subKeyPath}: {ex.Message}"); }
         }
 
-        private void DeleteCLSIDEntries()
+        /// <summary>Delete direct child subkeys whose name matches a BKAV keyword.</summary>
+        private static void DeleteBkavSubkeys(RegistryKey baseKey, string path)
         {
             try
             {
-                // Delete HKEY_CLASSES_ROOT\CLSID\*Bkav*
-                SearchAndDeleteCLSIDs(Registry.ClassesRoot, @"CLSID");
-                SearchAndDeleteCLSIDs(Registry.LocalMachine, @"Software\Classes\CLSID");
-                SearchAndDeleteCLSIDs(Registry.LocalMachine, @"Software\Wow6432Node\Classes\CLSID");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteCLSIDEntries Error: {ex.Message}");
-            }
-        }
-
-        private void SearchAndDeleteCLSIDs(RegistryKey baseKey, string clsidPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(clsidPath, true))
+                using (var key = baseKey.OpenSubKey(path, writable: true))
                 {
-                    if (key != null)
+                    if (key == null) return;
+                    foreach (var name in key.GetSubKeyNames().ToArray())
                     {
-                        foreach (var guid in key.GetSubKeyNames())
+                        if (!ContainsBkavKeyword(name)) continue;
+                        try
                         {
-                            try
-                            {
-                                using (var subKey = key.OpenSubKey(guid))
-                                {
-                                    // Check if CLSID contains BKAV reference
-                                    var defValue = subKey?.GetValue("")?.ToString() ?? "";
-                                    if (defValue.ToLower().Contains("bkav"))
-                                    {
-                                        key.DeleteSubKeyTree(guid, false);
-                                        Debug.WriteLine($"Deleted CLSID: {guid}");
-                                    }
-
-                                    // Also check InProcServer32 path
-                                    using (var inProcKey = subKey?.OpenSubKey("InProcServer32"))
-                                    {
-                                        var dllPath = inProcKey?.GetValue("")?.ToString() ?? "";
-                                        if (dllPath.ToLower().Contains("bkav"))
-                                        {
-                                            key.DeleteSubKeyTree(guid, false);
-                                            Debug.WriteLine($"Deleted CLSID with BkavDLL: {guid}");
-                                        }
-                                    }
-                                }
-                            }
-                            catch { }
+                            key.DeleteSubKeyTree(name, throwOnMissingSubKey: false);
+                            Debug.WriteLine($"Deleted subkey: {path}\\{name}");
                         }
+                        catch (Exception ex) { Debug.WriteLine($"Failed subkey {name}: {ex.Message}"); }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"SearchAndDeleteCLSIDs Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteBkavSubkeys({path}): {ex.Message}"); }
         }
 
-        private void DeleteTypeLibEntries()
+        /// <summary>Delete values whose string data matches a BKAV keyword.</summary>
+        private static void DeleteBkavValues(RegistryKey baseKey, string path)
         {
             try
             {
-                // Search in GUID-based TypeLib entries
-                string typeLibPath = @"Software\Classes\TypeLib";
-                DeleteBkavFromTypeLib(Registry.LocalMachine, typeLibPath);
-                DeleteBkavFromTypeLib(Registry.LocalMachine, @"Software\Wow6432Node\Classes\TypeLib");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteTypeLibEntries Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteBkavFromTypeLib(RegistryKey baseKey, string typeLibPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(typeLibPath, true))
+                using (var key = baseKey.OpenSubKey(path, writable: true))
                 {
-                    if (key != null)
-                    {
-                        foreach (var guid in key.GetSubKeyNames())
-                        {
-                            try
-                            {
-                                using (var guidKey = key.OpenSubKey(guid))
-                                {
-                                    // Check version subkeys
-                                    foreach (var version in guidKey?.GetSubKeyNames() ?? new string[] { })
-                                    {
-                                        using (var verKey = guidKey.OpenSubKey(version))
-                                        {
-                                            // Check win32 path
-                                            using (var win32Key = verKey?.OpenSubKey("0\\win32"))
-                                            {
-                                                var path = win32Key?.GetValue("")?.ToString() ?? "";
-                                                if (path.ToLower().Contains("bkav"))
-                                                {
-                                                    key.DeleteSubKeyTree(guid, false);
-                                                    Debug.WriteLine($"Deleted TypeLib: {guid}");
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteBkavFromTypeLib Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteShellIntegration()
-        {
-            try
-            {
-                // Delete shell context menu handlers
-                string shellExPath = @"Software\Classes\*\shellex\ContextMenuHandlers";
-                DeleteShellEntries(Registry.LocalMachine, shellExPath);
-
-                // Delete file type shell handlers
-                shellExPath = @"Software\Classes\lnkfile\shellex\ContextMenuHandlers";
-                DeleteShellEntries(Registry.LocalMachine, shellExPath);
-
-                // Also check Wow6432Node
-                shellExPath = @"Software\Wow6432Node\Classes\*\shellex\ContextMenuHandlers";
-                DeleteShellEntries(Registry.LocalMachine, shellExPath);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteShellIntegration Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteShellEntries(RegistryKey baseKey, string shellPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(shellPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (var handlerName in key.GetSubKeyNames())
-                        {
-                            if (handlerName.ToLower().Contains("bkav"))
-                            {
-                                try
-                                {
-                                    key.DeleteSubKeyTree(handlerName, false);
-                                    Debug.WriteLine($"Deleted shell handler: {handlerName}");
-                                }
-                                catch { }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteShellEntries Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteMuiCache()
-        {
-            try
-            {
-                // Delete from MuiCache
-                string muiPath = @"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache";
-                DeleteMuiCacheEntries(Registry.ClassesRoot, muiPath);
-                DeleteMuiCacheEntries(Registry.CurrentUser, @"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache");
-
-                // Also delete BagMRU entries
-                string bagPath = @"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU";
-                DeleteBagMRUEntries(Registry.ClassesRoot, bagPath);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteMuiCache Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteMuiCacheEntries(RegistryKey baseKey, string muiPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(muiPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (var valueName in key.GetValueNames().ToList())
-                        {
-                            try
-                            {
-                                var value = key.GetValue(valueName)?.ToString() ?? "";
-                                if (value.ToLower().Contains("bkav") || value.ToLower().Contains("uninstaller"))
-                                {
-                                    key.DeleteValue(valueName);
-                                    Debug.WriteLine($"Deleted MuiCache entry: {valueName}");
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteMuiCacheEntries Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteBagMRUEntries(RegistryKey baseKey, string bagPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(bagPath, true))
-                {
-                    if (key != null)
-                    {
-                        // Recursively delete subkeys containing BKAV
-                        DeleteBagMRURecursive(key, bagPath);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteBagMRUEntries Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteBagMRURecursive(RegistryKey key, string path)
-        {
-            try
-            {
-                foreach (var subKeyName in key.GetSubKeyNames().ToList())
-                {
-                    using (var subKey = key.OpenSubKey(subKeyName, true))
-                    {
-                        // Check for BKAV references in value
-                        foreach (var valueName in subKey?.GetValueNames() ?? new string[] { })
-                        {
-                            var value = subKey?.GetValue(valueName)?.ToString() ?? "";
-                            if (value.Contains("BKAV") || value.Contains("BkavPro"))
-                            {
-                                try
-                                {
-                                    key.DeleteSubKeyTree(subKeyName, false);
-                                    Debug.WriteLine($"Deleted BagMRU entry: {subKeyName}");
-                                    return;
-                                }
-                                catch { }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteBagMRURecursive Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteDownloadManagerEntries()
-        {
-            try
-            {
-                // Delete DownloadManager entries
-                string dmPath = @"Software\DownloadManager";
-                DeleteDownloadEntries(Registry.CurrentUser, dmPath);
-
-                // Delete AppCompatFlags entries
-                string compatPath = @"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store";
-                DeleteCompatFlagsEntries(Registry.CurrentUser, compatPath);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteDownloadManagerEntries Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteDownloadEntries(RegistryKey baseKey, string dmPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(dmPath, true))
-                {
-                    if (key != null)
-                    {
-                        // Delete specific subkeys
-                        using (var subKey4 = key.OpenSubKey("4"))
-                        {
-                            if (subKey4 != null)
-                            {
-                                key.DeleteSubKeyTree("4", false);
-                                Debug.WriteLine("Deleted DownloadManager entry: 4");
-                            }
-                        }
-
-                        // Delete value entries containing BKAV
-                        foreach (var valueName in key.GetValueNames().ToList())
-                        {
-                            var value = key.GetValue(valueName)?.ToString() ?? "";
-                            if (value.ToLower().Contains("bkav") || value.ToLower().Contains("update.bkav"))
-                            {
-                                try
-                                {
-                                    key.DeleteValue(valueName);
-                                    Debug.WriteLine($"Deleted DownloadManager value: {valueName}");
-                                }
-                                catch { }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteDownloadEntries Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteCompatFlagsEntries(RegistryKey baseKey, string compatPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(compatPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (var valueName in key.GetValueNames().ToList())
-                        {
-                            try
-                            {
-                                if (valueName.ToLower().Contains("bkav") || valueName.ToLower().Contains("uninstaller"))
-                                {
-                                    key.DeleteValue(valueName);
-                                    Debug.WriteLine($"Deleted AppCompatFlags entry: {valueName}");
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteCompatFlagsEntries Error: {ex.Message}");
-            }
-        }
-
-        private void FinalRegistryCleanup()
-        {
-            try
-            {
-                Debug.WriteLine("Starting Final Registry Cleanup (Bước 7)...");
-
-                // Comprehensive scan of all registry hives
-                var registryPaths = new[]
-                {
-                    // HKEY_LOCAL_MACHINE paths
-                    new { Key = Registry.LocalMachine, Path = @"Software" },
-                    new { Key = Registry.LocalMachine, Path = @"Software\Wow6432Node" },
-                    new { Key = Registry.LocalMachine, Path = @"Software\Classes" },
-                    new { Key = Registry.LocalMachine, Path = @"Software\Wow6432Node\Classes" },
-                    new { Key = Registry.LocalMachine, Path = @"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders" },
-                    new { Key = Registry.LocalMachine, Path = @"Software\Microsoft\Shared Tools\MSEnv\Macros" },
-                    new { Key = Registry.LocalMachine, Path = @"System\CurrentControlSet\Enum" },
-                    new { Key = Registry.LocalMachine, Path = @"System\CurrentControlSet\Services" },
-
-                    // HKEY_CURRENT_USER paths
-                    new { Key = Registry.CurrentUser, Path = @"Software" },
-                    new { Key = Registry.CurrentUser, Path = @"Software\Classes" },
-                    new { Key = Registry.CurrentUser, Path = @"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2" },
-                };
-
-                foreach (var regPath in registryPaths)
-                {
-                    ComprehensiveCleanupPass(regPath.Key, regPath.Path);
-                }
-
-                Debug.WriteLine("Final Registry Cleanup completed");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"FinalRegistryCleanup Error: {ex.Message}");
-            }
-        }
-
-        private void ComprehensiveCleanupPass(RegistryKey baseKey, string searchPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(searchPath, true))
-                {
-                    if (key != null)
-                    {
-                        // Clean subkeys recursively
-                        CleanRegistrySubkeysRecursive(key, searchPath);
-
-                        // Clean values
-                        foreach (var valueName in key.GetValueNames().ToList())
-                        {
-                            try
-                            {
-                                var value = key.GetValue(valueName)?.ToString() ?? "";
-                                if (value.ToLower().Contains("bkav") || 
-                                    value.ToLower().Contains("vsmart") ||
-                                    value.ToLower().Contains("v-smart") ||
-                                    value.ToLower().Contains("bka.exe"))
-                                {
-                                    key.DeleteValue(valueName);
-                                    Debug.WriteLine($"Deleted final value: {searchPath}\\{valueName}");
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"ComprehensiveCleanupPass Error for {searchPath}: {ex.Message}");
-            }
-        }
-
-        private void CleanRegistrySubkeysRecursive(RegistryKey key, string path)
-        {
-            try
-            {
-                var subKeyNames = key.GetSubKeyNames().ToList();
-
-                foreach (var subKeyName in subKeyNames)
-                {
-                    // Check if subkey name contains BKAV references
-                    if (subKeyName.ToLower().Contains("bkav") || 
-                        subKeyName.ToLower().Contains("vsmart") ||
-                        subKeyName.ToLower().Contains("v-smart") ||
-                        subKeyName.ToLower().Contains("bkavsystem") ||
-                        subKeyName.ToLower().Contains("bkavutil"))
+                    if (key == null) return;
+                    foreach (var valueName in key.GetValueNames().ToArray())
                     {
                         try
                         {
-                            key.DeleteSubKeyTree(subKeyName, false);
-                            Debug.WriteLine($"Deleted final subkey: {path}\\{subKeyName}");
+                            var data = key.GetValue(valueName)?.ToString() ?? string.Empty;
+                            if (!ContainsBkavKeyword(data)) continue;
+                            key.DeleteValue(valueName, throwOnMissingValue: false);
+                            Debug.WriteLine($"Deleted value: {path}\\{valueName}");
                         }
-                        catch (Exception ex)
-                        {
-                            Debug.WriteLine($"Failed to delete subkey {subKeyName}: {ex.Message}");
-                        }
+                        catch { }
                     }
-                    else
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteBkavValues({path}): {ex.Message}"); }
+        }
+
+        // ════════════════════════════════════════════════════════════════════════
+        //  REGISTRY CLEANUP — STEP IMPLEMENTATIONS
+        // ════════════════════════════════════════════════════════════════════════
+
+        private static void SearchAndDeleteUninstallEntry()
+        {
+            foreach (var p in new[]
+            {
+                @"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                @"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+            })
+            {
+                DeleteBkavSubkeys(Registry.LocalMachine, p);
+                DeleteBkavSubkeys(Registry.CurrentUser,  p);
+            }
+        }
+
+        private static void SearchAndDeleteAppPaths()
+        {
+            DeleteBkavSubkeys(Registry.LocalMachine,
+                @"Software\Microsoft\Windows\CurrentVersion\App Paths");
+            DeleteBkavSubkeys(Registry.CurrentUser,
+                @"Software\Microsoft\Windows\CurrentVersion\App Paths");
+        }
+
+        private static void DeleteFileAssociations()
+        {
+            DeleteFromRegistry(Registry.LocalMachine, @"Software\Classes\.bkav");
+            DeleteFromRegistry(Registry.LocalMachine, @"Software\Classes\.vsmart");
+            DeleteBkavSubkeys(Registry.LocalMachine, @"Software\Classes");
+            DeleteBkavSubkeys(Registry.CurrentUser,  @"Software\Classes");
+        }
+
+        private static void DeleteBkavServices()
+        {
+            foreach (var p in new[]
+            {
+                @"System\CurrentControlSet\Services",
+                @"System\ControlSet001\Services",
+                @"System\ControlSet002\Services"
+            })
+                DeleteBkavSubkeys(Registry.LocalMachine, p);
+        }
+
+        private static void DeleteScheduledTasks()
+        {
+            DeleteBkavSubkeys(Registry.LocalMachine,
+                @"Software\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree");
+        }
+
+        private static void DeleteRunEntries()
+        {
+            foreach (var p in new[]
+            {
+                @"Software\Microsoft\Windows\CurrentVersion\Run",
+                @"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+                @"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run",
+                @"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\RunOnce"
+            })
+            {
+                DeleteBkavValues(Registry.LocalMachine, p);
+                DeleteBkavValues(Registry.CurrentUser,  p);
+            }
+        }
+
+        private static void DeleteClassesAssociations()
+        {
+            DeleteBkavSubkeys(Registry.LocalMachine, @"Software\Classes\CLSID");
+            DeleteBkavSubkeys(Registry.LocalMachine, @"Software\Classes");
+        }
+
+        private static void DeleteAppIDEntries()
+        {
+            // AppID con thường đặt tên theo GUID (không chứa "bkav") — so theo tên subkey
+            // là chưa đủ, cần kiểm tra thêm giá trị bên trong (@ hoặc "LocalService").
+            foreach (var p in new[]
+            {
+                @"AppID",                                   // HKCR (view 64-bit)
+                @"Software\Classes\AppID",                   // HKLM (view 64-bit)
+                @"Software\Wow6432Node\Classes\AppID",        // HKLM (32-bit view, path chuẩn)
+                @"Software\Classes\WOW6432Node\AppID"         // HKLM — path bị BKAV ghi đảo thứ tự
+            })
+            {
+                var hive = p == "AppID" ? HKCR64 : HKLM64;
+                DeleteBkavSubkeys(hive, p);
+                DeleteSubkeysWhereAnyValueMatches(hive, p);
+            }
+        }
+
+        private static void DeleteCLSIDEntries()
+        {
+            SearchAndDeleteCLSIDs(HKCR64,             @"CLSID");
+            SearchAndDeleteCLSIDs(HKLM64,              @"Software\Classes\CLSID");
+            SearchAndDeleteCLSIDs(Registry.LocalMachine, @"Software\Wow6432Node\Classes\CLSID");
+        }
+
+        private static void DeleteSecurityCenterProviders()
+        {
+            DeleteSubkeysWhereAnyValueMatches(HKLM64, @"Software\Microsoft\Security Center\Provider\Av");
+            DeleteSubkeysWhereAnyValueMatches(HKLM64, @"Software\Microsoft\Security Center\Provider\Fw");
+        }
+
+        /// <summary>Xóa subkey con nếu TÊN khớp keyword, hoặc bất kỳ value (kể cả giá trị mặc định) bên trong nó chứa keyword.</summary>
+        private static void DeleteSubkeysWhereAnyValueMatches(RegistryKey baseKey, string path)
+        {
+            try
+            {
+                using (var key = baseKey.OpenSubKey(path, writable: true))
+                {
+                    if (key == null) return;
+                    foreach (var name in key.GetSubKeyNames().ToArray())
                     {
-                        // Recursively check nested keys
                         try
                         {
-                            using (var subKey = key.OpenSubKey(subKeyName, true))
-                            {
-                                if (subKey != null)
+                            bool shouldDelete = ContainsBkavKeyword(name);
+                            if (!shouldDelete)
+                                using (var sub = key.OpenSubKey(name))
                                 {
-                                    CleanRegistrySubkeysRecursive(subKey, $"{path}\\{subKeyName}");
+                                    if (sub != null)
+                                    {
+                                        if (ContainsBkavKeyword(sub.GetValue("")?.ToString()))
+                                            shouldDelete = true;
+                                        else
+                                            foreach (var vn in sub.GetValueNames())
+                                                if (ContainsBkavKeyword(sub.GetValue(vn)?.ToString()))
+                                                { shouldDelete = true; break; }
+                                    }
                                 }
+
+                            if (shouldDelete)
+                            {
+                                key.DeleteSubKeyTree(name, throwOnMissingSubKey: false);
+                                Debug.WriteLine($"Deleted (by value): {path}\\{name}");
                             }
                         }
                         catch { }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"CleanRegistrySubkeysRecursive Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteSubkeysWhereAnyValueMatches({path}): {ex.Message}"); }
         }
 
-        private void SearchAndDeleteAppPaths()
+        /// <summary>Lọc các phần tử chứa keyword BKAV ra khỏi một giá trị REG_MULTI_SZ (vd: ServiceGroupOrder\List).</summary>
+        private static void CleanServiceGroupOrder(RegistryKey baseKey, string path)
         {
             try
             {
-                string appPathsKey = @"Software\Microsoft\Windows\CurrentVersion\App Paths";
-                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(appPathsKey, true))
+                using (var key = baseKey.OpenSubKey(path, writable: true))
                 {
-                    if (key != null)
+                    if (key == null) return;
+                    if (key.GetValueKind("List") != RegistryValueKind.MultiString) return;
+
+                    var list = key.GetValue("List") as string[];
+                    if (list == null) return;
+
+                    var cleaned = list.Where(s => !ContainsBkavKeyword(s)).ToArray();
+                    if (cleaned.Length == list.Length) return;
+
+                    key.SetValue("List", cleaned, RegistryValueKind.MultiString);
+                    Debug.WriteLine($"Cleaned ServiceGroupOrder\\List ({path}): removed {list.Length - cleaned.Length} entries");
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine($"CleanServiceGroupOrder({path}): {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// Xóa CLSID entry nếu default value, InProcServer32, hoặc LocalServer32 chứa BKAV keyword.
+        /// </summary>
+        private static void SearchAndDeleteCLSIDs(RegistryKey baseKey, string clsidPath)
+        {
+            try
+            {
+                using (var key = baseKey.OpenSubKey(clsidPath, writable: true))
+                {
+                    if (key == null) return;
+                    foreach (var guid in key.GetSubKeyNames().ToArray())
                     {
-                        foreach (var subKeyName in key.GetSubKeyNames())
+                        try
                         {
-                            if (subKeyName.ToLower().Contains("bkav") || 
-                                subKeyName.ToLower().Contains("v-smart") ||
-                                subKeyName.ToLower().Contains("vsmart"))
+                            bool shouldDelete = false;
+                            using (var subKey = key.OpenSubKey(guid))
                             {
-                                try
-                                {
-                                    key.DeleteSubKeyTree(subKeyName, false);
-                                    Debug.WriteLine($"Deleted App Path: {subKeyName}");
-                                }
-                                catch (Exception ex)
-                                {
-                                    Debug.WriteLine($"Failed to delete App Path {subKeyName}: {ex.Message}");
-                                }
+                                if (subKey == null) continue;
+
+                                // (a) Default value
+                                if (ContainsBkavKeyword(subKey.GetValue("")?.ToString()))
+                                    shouldDelete = true;
+
+                                // (b) InProcServer32 (in-process COM DLL)
+                                if (!shouldDelete)
+                                    using (var srv = subKey.OpenSubKey("InProcServer32"))
+                                        if (ContainsBkavKeyword(srv?.GetValue("")?.ToString()))
+                                            shouldDelete = true;
+
+                                // (c) LocalServer32 (out-of-process COM EXE) ← NEW
+                                if (!shouldDelete)
+                                    using (var srv = subKey.OpenSubKey("LocalServer32"))
+                                        if (ContainsBkavKeyword(srv?.GetValue("")?.ToString()))
+                                            shouldDelete = true;
+
+                                // (d) ProgID / VersionIndependentProgID ← NEW
+                                if (!shouldDelete)
+                                    foreach (var progIdKey in new[] { "ProgID", "VersionIndependentProgID" })
+                                        using (var pid = subKey.OpenSubKey(progIdKey))
+                                            if (ContainsBkavKeyword(pid?.GetValue("")?.ToString()))
+                                            { shouldDelete = true; break; }
+                            }
+
+                            if (shouldDelete)
+                            {
+                                key.DeleteSubKeyTree(guid, throwOnMissingSubKey: false);
+                                Debug.WriteLine($"Deleted CLSID: {clsidPath}\\{guid}");
                             }
                         }
+                        catch { }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"SearchAndDeleteAppPaths Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"SearchAndDeleteCLSIDs: {ex.Message}"); }
         }
 
-        private void DeleteFileAssociations()
+        private static void DeleteTypeLibEntries()
+        {
+            DeleteBkavFromTypeLib(Registry.LocalMachine, @"Software\Classes\TypeLib");
+            DeleteBkavFromTypeLib(Registry.LocalMachine, @"Software\Wow6432Node\Classes\TypeLib");
+        }
+
+        private static void DeleteBkavFromTypeLib(RegistryKey baseKey, string typeLibPath)
         {
             try
             {
-                // Delete from HKLM\Software\Classes
-                DeleteFromRegistry(Registry.LocalMachine, @"Software\Classes\.bkav");
-                DeleteFromRegistry(Registry.LocalMachine, @"Software\Classes\.vsmart");
-
-                // Search for BKAV-related file extensions
-                SearchAndDeleteFromClasses(Registry.LocalMachine, @"Software\Classes");
-                SearchAndDeleteFromClasses(Registry.CurrentUser, @"Software\Classes");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteFileAssociations Error: {ex.Message}");
-            }
-        }
-
-        private void SearchAndDeleteFromClasses(RegistryKey baseKey, string classesPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(classesPath, true))
+                using (var key = baseKey.OpenSubKey(typeLibPath, writable: true))
                 {
-                    if (key != null)
+                    if (key == null) return;
+                    foreach (var guid in key.GetSubKeyNames().ToArray())
                     {
-                        foreach (var subKeyName in key.GetSubKeyNames())
+                        try
                         {
-                            if (subKeyName.ToLower().Contains("bkav") || 
-                                subKeyName.ToLower().Contains("vsmart"))
+                            bool shouldDelete = false;
+                            using (var guidKey = key.OpenSubKey(guid))
                             {
-                                try
+                                if (guidKey == null) continue;
+                                foreach (var version in guidKey.GetSubKeyNames())
                                 {
-                                    key.DeleteSubKeyTree(subKeyName, false);
-                                    Debug.WriteLine($"Deleted class association: {subKeyName}");
+                                    using (var verKey = guidKey.OpenSubKey(version))
+                                    using (var win32Key = verKey?.OpenSubKey(@"0\win32"))
+                                    {
+                                        if (ContainsBkavKeyword(win32Key?.GetValue("")?.ToString()))
+                                        { shouldDelete = true; break; }
+                                    }
                                 }
-                                catch { }
+                            }
+                            if (shouldDelete)
+                            {
+                                key.DeleteSubKeyTree(guid, throwOnMissingSubKey: false);
+                                Debug.WriteLine($"Deleted TypeLib: {guid}");
                             }
                         }
+                        catch { }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"SearchAndDeleteFromClasses Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteBkavFromTypeLib: {ex.Message}"); }
         }
 
-        private void DeleteBkavServices()
+        private static void DeleteShellIntegration()
         {
-            try
+            foreach (var classRoot in new[]
             {
-                string servicesPath = @"System\CurrentControlSet\Services";
-                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(servicesPath, true))
+                @"Software\Classes",
+                @"Software\Wow6432Node\Classes"
+            })
+            {
+                try
                 {
-                    if (key != null)
+                    using (var classesKey = Registry.LocalMachine.OpenSubKey(classRoot))
                     {
-                        foreach (var serviceName in key.GetSubKeyNames())
-                        {
-                            if (serviceName.ToLower().Contains("bkav") || 
-                                serviceName.ToLower().Contains("v-smart") ||
-                                serviceName.ToLower().Contains("vsmart"))
-                            {
-                                try
-                                {
-                                    key.DeleteSubKeyTree(serviceName, false);
-                                    Debug.WriteLine($"Deleted service: {serviceName}");
-                                }
-                                catch (Exception ex)
-                                {
-                                    Debug.WriteLine($"Failed to delete service {serviceName}: {ex.Message}");
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Also scan ControlSet001 and ControlSet002 for BKAV services
-                DeleteBkavServicesFromPath(Registry.LocalMachine, @"System\ControlSet001\Services");
-                DeleteBkavServicesFromPath(Registry.LocalMachine, @"System\ControlSet002\Services");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteBkavServices Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteScheduledTasks()
-        {
-            try
-            {
-                string tasksPath = @"Software\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree";
-                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(tasksPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (var taskName in key.GetSubKeyNames())
-                        {
-                            if (taskName.ToLower().Contains("bkav") || 
-                                taskName.ToLower().Contains("v-smart") ||
-                                taskName.ToLower().Contains("vsmart"))
-                            {
-                                try
-                                {
-                                    key.DeleteSubKeyTree(taskName, false);
-                                    Debug.WriteLine($"Deleted scheduled task: {taskName}");
-                                }
-                                catch (Exception ex)
-                                {
-                                    Debug.WriteLine($"Failed to delete task {taskName}: {ex.Message}");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteScheduledTasks Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteBkavServicesFromPath(RegistryKey baseKey, string servicesPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(servicesPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (var serviceName in key.GetSubKeyNames())
-                        {
-                            if (serviceName.ToLower().Contains("bkav") ||
-                                serviceName.ToLower().Contains("v-smart") ||
-                                serviceName.ToLower().Contains("vsmart"))
-                            {
-                                try
-                                {
-                                    key.DeleteSubKeyTree(serviceName, false);
-                                    Debug.WriteLine($"Deleted service from {servicesPath}: {serviceName}");
-                                }
-                                catch (Exception ex)
-                                {
-                                    Debug.WriteLine($"Failed to delete service {serviceName} from {servicesPath}: {ex.Message}");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteBkavServicesFromPath Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteRunEntries()
-        {
-            try
-            {
-                // Delete from HKLM Run
-                DeleteRunFromKey(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run");
-                DeleteRunFromKey(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\RunOnce");
-                DeleteRunFromKey(Registry.LocalMachine, @"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run");
-                DeleteRunFromKey(Registry.LocalMachine, @"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\RunOnce");
-
-                // Delete from HKCU Run
-                DeleteRunFromKey(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run");
-                DeleteRunFromKey(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\RunOnce");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteRunEntries Error: {ex.Message}");
-            }
-        }
-
-        private void DeleteRunFromKey(RegistryKey baseKey, string runPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(runPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (var valueName in key.GetValueNames())
+                        if (classesKey == null) continue;
+                        foreach (var typeName in classesKey.GetSubKeyNames())
                         {
                             try
                             {
-                                var value = key.GetValue(valueName)?.ToString().ToLower() ?? "";
-                                if (value.Contains("bkav") || value.Contains("v-smart") || value.Contains("vsmart"))
-                                {
-                                    key.DeleteValue(valueName);
-                                    Debug.WriteLine($"Deleted run entry: {valueName}");
-                                }
+                                DeleteBkavSubkeys(Registry.LocalMachine,
+                                    $@"{classRoot}\{typeName}\shellex\ContextMenuHandlers");
                             }
                             catch { }
                         }
                     }
                 }
+                catch (Exception ex) { Debug.WriteLine($"DeleteShellIntegration ({classRoot}): {ex.Message}"); }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteRunFromKey Error: {ex.Message}");
-            }
+
+            // "*" wildcard file type (all files) ← NEW
+            DeleteBkavSubkeys(Registry.LocalMachine,
+                @"Software\Classes\*\shellex\ContextMenuHandlers");
+            DeleteBkavSubkeys(Registry.LocalMachine,
+                @"Software\Classes\lnkfile\shellex\ContextMenuHandlers");
         }
 
-        private void DeleteClassesAssociations()
+        private static void DeleteMuiCache()
+        {
+            const string muiPath = @"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache";
+            DeleteBkavValues(Registry.ClassesRoot, muiPath);
+            DeleteBkavValues(Registry.CurrentUser,  muiPath);
+
+            const string bagPath = @"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU";
+            DeleteBagMRUEntries(Registry.ClassesRoot, bagPath);
+        }
+
+        private static void DeleteBagMRUEntries(RegistryKey baseKey, string bagPath)
         {
             try
             {
-                // Delete BKAV-related class handlers
-                string handlersPath = @"Software\Classes\CLSID";
-                DeleteBkavFromPath(Registry.LocalMachine, handlersPath);
-
-                // Delete ProgIDs
-                string progIdsPath = @"Software\Classes";
-                DeleteBkavFromPath(Registry.LocalMachine, progIdsPath);
+                using (var key = baseKey.OpenSubKey(bagPath, writable: true))
+                    if (key != null) DeleteBagMRURecursive(key);
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteClassesAssociations Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteBagMRUEntries: {ex.Message}"); }
         }
 
-        private void DeleteBkavFromPath(RegistryKey baseKey, string path)
+        private static void DeleteBagMRURecursive(RegistryKey key)
         {
             try
             {
-                using (RegistryKey key = baseKey.OpenSubKey(path, true))
+                foreach (var subKeyName in key.GetSubKeyNames().ToArray())
+                {
+                    try
+                    {
+                        bool shouldDelete = false;
+                        using (var subKey = key.OpenSubKey(subKeyName))
+                        {
+                            if (subKey == null) continue;
+                            foreach (var vn in subKey.GetValueNames())
+                                if (ContainsBkavKeyword(subKey.GetValue(vn)?.ToString()))
+                                { shouldDelete = true; break; }
+                        }
+
+                        if (shouldDelete)
+                        {
+                            key.DeleteSubKeyTree(subKeyName, throwOnMissingSubKey: false);
+                            Debug.WriteLine($"Deleted BagMRU: {subKeyName}");
+                        }
+                        else
+                        {
+                            using (var subKey = key.OpenSubKey(subKeyName, writable: true))
+                                if (subKey != null) DeleteBagMRURecursive(subKey);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteBagMRURecursive: {ex.Message}"); }
+        }
+
+        private static void DeleteDownloadManagerEntries()
+        {
+            DeleteBkavValues(Registry.CurrentUser, @"Software\DownloadManager");
+
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\DownloadManager\4"))
                 {
                     if (key != null)
                     {
-                        foreach (var subKeyName in key.GetSubKeyNames().ToList())
+                        bool hasBkav = key.GetValueNames()
+                            .Any(vn => ContainsBkavKeyword(key.GetValue(vn)?.ToString()));
+                        if (hasBkav)
+                            DeleteFromRegistry(Registry.CurrentUser, @"Software\DownloadManager\4");
+                    }
+                }
+            }
+            catch { }
+
+            DeleteBkavValues(Registry.CurrentUser,
+                @"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store");
+        }
+
+        // ── NEW: Image File Execution Options (IFEO) hijack ──────────────────────
+        private static void DeleteIfeoEntries()
+        {
+            DeleteBkavSubkeys(Registry.LocalMachine,
+                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options");
+        }
+
+        // ── NEW: SafeBoot driver entries ─────────────────────────────────────────
+        private static void DeleteSafeBootEntries()
+        {
+            foreach (var p in new[]
+            {
+                @"SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal",
+                @"SYSTEM\CurrentControlSet\Control\SafeBoot\Network"
+            })
+                DeleteBkavSubkeys(Registry.LocalMachine, p);
+        }
+
+        // ── NEW: Winlogon Notify hooks ────────────────────────────────────────────
+        private static void DeleteWinlogonNotify()
+        {
+            DeleteBkavSubkeys(Registry.LocalMachine,
+                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Notify");
+            DeleteBkavValues(Registry.LocalMachine,
+                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon");
+        }
+
+        // ── NEW: MSI Installer records ───────────────────────────────────────────
+        private static void DeleteInstallerRecords()
+        {
+            // Products / Features: iterate GUIDs, check DisplayName value
+            foreach (var p in new[]
+            {
+                @"Software\Classes\Installer\Products",
+                @"Software\Classes\Installer\Features"
+            })
+            {
+                try
+                {
+                    using (var key = Registry.LocalMachine.OpenSubKey(p, writable: true))
+                    {
+                        if (key == null) continue;
+                        foreach (var guid in key.GetSubKeyNames().ToArray())
                         {
-                            if (subKeyName.ToLower().Contains("bkav") || 
-                                subKeyName.ToLower().Contains("vsmart") ||
-                                subKeyName.ToLower().Contains("bkavsystem"))
+                            try
                             {
-                                try
+                                using (var sub = key.OpenSubKey(guid))
                                 {
-                                    key.DeleteSubKeyTree(subKeyName, false);
-                                    Debug.WriteLine($"Deleted from {path}: {subKeyName}");
+                                    if (sub == null) continue;
+                                    var name = sub.GetValue("ProductName")?.ToString()
+                                            ?? sub.GetValue("")?.ToString()
+                                            ?? string.Empty;
+                                    if (!ContainsBkavKeyword(name)) continue;
                                 }
-                                catch { }
+                                key.DeleteSubKeyTree(guid, throwOnMissingSubKey: false);
+                                Debug.WriteLine($"Deleted Installer record: {p}\\{guid}");
                             }
+                            catch { }
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteBkavFromPath Error: {ex.Message}");
+                catch (Exception ex) { Debug.WriteLine($"DeleteInstallerRecords({p}): {ex.Message}"); }
             }
         }
 
-        private void DeleteFromRegistry(RegistryKey baseKey, string subKeyPath)
+        private static void FinalRegistryCleanup()
+        {
+            Debug.WriteLine("Starting FinalRegistryCleanup...");
+
+            var passes = new[]
+            {
+                // ── Original paths ──────────────────────────────────────────────
+                new { Key = Registry.LocalMachine, Path = @"Software" },
+                new { Key = Registry.LocalMachine, Path = @"Software\Wow6432Node" },
+                new { Key = Registry.LocalMachine, Path = @"Software\Classes" },
+                new { Key = Registry.LocalMachine, Path = @"Software\Wow6432Node\Classes" },
+                new { Key = Registry.LocalMachine, Path = @"System\CurrentControlSet\Services" },
+                new { Key = Registry.CurrentUser,  Path = @"Software" },
+                new { Key = Registry.CurrentUser,  Path = @"Software\Classes" },
+                // ── NEW paths ───────────────────────────────────────────────────
+                new { Key = Registry.LocalMachine, Path = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects" },
+                new { Key = Registry.LocalMachine, Path = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options" },
+                new { Key = Registry.LocalMachine, Path = @"SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal" },
+                new { Key = Registry.LocalMachine, Path = @"SYSTEM\CurrentControlSet\Control\SafeBoot\Network" },
+                new { Key = Registry.LocalMachine, Path = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" },
+                new { Key = Registry.LocalMachine, Path = @"Software\Classes\Installer\Products" },
+                new { Key = Registry.LocalMachine, Path = @"Software\Classes\Installer\Features" },
+            };
+
+            foreach (var entry in passes)
+                ComprehensiveCleanupPass(entry.Key, entry.Path);
+
+            Debug.WriteLine("FinalRegistryCleanup done.");
+        }
+
+        private static void ComprehensiveCleanupPass(RegistryKey baseKey, string searchPath)
         {
             try
             {
-                using (RegistryKey key = baseKey.OpenSubKey(subKeyPath, true))
+                using (var key = baseKey.OpenSubKey(searchPath, writable: true))
                 {
-                    if (key != null)
-                    {
-                        baseKey.DeleteSubKeyTree(subKeyPath, false);
-                        Debug.WriteLine($"Deleted registry key: {subKeyPath}");
-                    }
+                    if (key == null) return;
+                    CleanRegistrySubkeysRecursive(key, searchPath);
+                    DeleteBkavValues(baseKey, searchPath);
                 }
             }
-            catch (UnauthorizedAccessException)
-            {
-                Debug.WriteLine($"Access denied to registry key: {subKeyPath}");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Error deleting registry key {subKeyPath}: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"ComprehensiveCleanupPass({searchPath}): {ex.Message}"); }
         }
 
-        private void SearchAndDeleteUninstallEntry()
+        private static void CleanRegistrySubkeysRecursive(RegistryKey key, string path)
         {
+            if (key == null) return;
             try
             {
-                // Search in HKLM Uninstall
-                SearchUninstallKeys(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Uninstall");
-                SearchUninstallKeys(Registry.LocalMachine, @"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall");
-                // Search in HKCU Uninstall
-                SearchUninstallKeys(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Uninstall");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"SearchAndDeleteUninstallEntry Error: {ex.Message}");
-            }
-        }
-
-        private void SearchUninstallKeys(RegistryKey baseKey, string uninstallPath)
-        {
-            try
-            {
-                using (RegistryKey key = baseKey.OpenSubKey(uninstallPath, true))
+                foreach (var subKeyName in key.GetSubKeyNames().ToArray())
                 {
-                    if (key != null)
+                    if (ContainsBkavKeyword(subKeyName))
                     {
-                        foreach (string subKeyName in key.GetSubKeyNames())
+                        try
                         {
-                            if (subKeyName.ToLower().Contains("bkav") || subKeyName.ToLower().Contains("v-smart"))
-                            {
-                                try
-                                {
-                                    key.DeleteSubKeyTree(subKeyName, false);
-                                    Debug.WriteLine($"Deleted uninstall entry: {subKeyName}");
-                                }
-                                catch (Exception ex)
-                                {
-                                    Debug.WriteLine($"Failed to delete {subKeyName}: {ex.Message}");
-                                }
-                            }
+                            key.DeleteSubKeyTree(subKeyName, throwOnMissingSubKey: false);
+                            Debug.WriteLine($"Deleted (recursive): {path}\\{subKeyName}");
                         }
+                        catch (Exception ex) { Debug.WriteLine($"Failed {subKeyName}: {ex.Message}"); }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            using (var subKey = key.OpenSubKey(subKeyName, writable: true))
+                                if (subKey != null)
+                                    CleanRegistrySubkeysRecursive(subKey, $"{path}\\{subKeyName}");
+                        }
+                        catch { }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"SearchUninstallKeys Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"CleanRegistrySubkeysRecursive({path}): {ex.Message}"); }
         }
 
-        private void DeleteStartupShortcuts()
+        // ════════════════════════════════════════════════════════════════════════
+        //  STARTUP SHORTCUTS
+        // ════════════════════════════════════════════════════════════════════════
+
+        private static void DeleteStartupShortcuts()
         {
             try
             {
                 string startupPath = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    @"Microsoft\Windows\Start Menu\Programs\Startup"
-                );
+                    @"Microsoft\Windows\Start Menu\Programs\Startup");
 
-                if (Directory.Exists(startupPath))
+                if (!Directory.Exists(startupPath)) return;
+                foreach (var file in Directory.GetFiles(startupPath, "*.lnk"))
                 {
-                    foreach (var file in Directory.GetFiles(startupPath, "*.lnk"))
-                    {
-                        if (file.ToLower().Contains("bkav") || file.ToLower().Contains("v-smart"))
-                        {
-                            try
-                            {
-                                File.Delete(file);
-                                Debug.WriteLine($"Deleted startup shortcut: {file}");
-                            }
-                            catch (Exception ex)
-                            {
-                                Debug.WriteLine($"Failed to delete startup shortcut {file}: {ex.Message}");
-                            }
-                        }
-                    }
+                    if (!ContainsBkavKeyword(Path.GetFileName(file))) continue;
+                    try { File.Delete(file); Debug.WriteLine($"Deleted shortcut: {file}"); }
+                    catch (Exception ex) { Debug.WriteLine($"Failed shortcut {file}: {ex.Message}"); }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"DeleteStartupShortcuts Error: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.WriteLine($"DeleteStartupShortcuts: {ex.Message}"); }
         }
 
-        private void CleanEnvironmentVariables()
+        // ════════════════════════════════════════════════════════════════════════
+        //  ENVIRONMENT VARIABLES
+        // ════════════════════════════════════════════════════════════════════════
+
+        private static void CleanEnvironmentVariables()
         {
             try
             {
-                // Remove BKAV from PATH environment variable
-                string pathValue = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? "";
-                string[] pathEntries = pathValue.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                CleanPathVariable(EnvironmentVariableTarget.User);
+                CleanPathVariable(EnvironmentVariableTarget.Machine);
+            }
+            catch (Exception ex) { Debug.WriteLine($"CleanEnvironmentVariables: {ex.Message}"); }
+        }
 
-                var cleanedPaths = pathEntries
-                    .Where(p => !p.ToLower().Contains("bkav") && !p.ToLower().Contains("v-smart"))
-                    .ToArray();
+        private static void CleanPathVariable(EnvironmentVariableTarget target)
+        {
+            try
+            {
+                string pathValue = Environment.GetEnvironmentVariable("PATH", target) ?? string.Empty;
+                var entries      = pathValue.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                var cleaned      = entries.Where(p => !ContainsBkavKeyword(p)).ToArray();
+                if (cleaned.Length == entries.Length) return;
+                Environment.SetEnvironmentVariable("PATH", string.Join(";", cleaned), target);
+                Debug.WriteLine($"Cleaned PATH ({target})");
+            }
+            catch (Exception ex) { Debug.WriteLine($"CleanPathVariable({target}): {ex.Message}"); }
+        }
 
-                if (cleanedPaths.Length < pathEntries.Length)
-                {
-                    string cleanedPath = string.Join(";", cleanedPaths);
-                    try
-                    {
-                        Environment.SetEnvironmentVariable("PATH", cleanedPath, EnvironmentVariableTarget.User);
-                        Debug.WriteLine("Cleaned PATH environment variable");
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"Failed to update PATH: {ex.Message}");
-                    }
-                }
+        // ════════════════════════════════════════════════════════════════════════
+        //  CONTEXT MENU (right-click on OS label)
+        // ════════════════════════════════════════════════════════════════════════
+
+        private void lblwin_Click(object sender, EventArgs e) => ShowToolsMenu(Cursor.Position);
+
+        private void btnTools_Click(object sender, EventArgs e)
+        {
+            var screenPoint = btnTools.PointToScreen(new System.Drawing.Point(0, btnTools.Height));
+            ShowToolsMenu(screenPoint);
+        }
+
+        private void ShowToolsMenu(System.Drawing.Point screenPosition)
+        {
+            // Không dùng "using" và không tự Dispose(): ContextMenuStrip.Show() không chặn
+            // luồng gọi, nên dispose ngay sau Show() (hoặc ngay trong sự kiện Closed của
+            // chính nó) có thể hủy menu trong lúc nó vẫn đang tự xử lý việc đóng/chọn mục,
+            // gây lỗi "Cannot access a disposed object". Để GC thu dọn là đủ cho một menu
+            // nhỏ, dùng tạm thời như thế này.
+            var menu = new ContextMenuStrip();
+
+            var updateItem = new ToolStripMenuItem("🔄 Kiểm tra cập nhật");
+            updateItem.Click += (s, args) => CheckForUpdatesInBackground(showUpToDateMessage: true);
+            menu.Items.Add(updateItem);
+
+            var aboutItem = new ToolStripMenuItem("ℹ️ Giới thiệu");
+            aboutItem.Click += (s, args) => ShowAbout();
+            menu.Items.Add(aboutItem);
+
+            var exitItem = new ToolStripMenuItem("🚪 Thoát");
+            exitItem.Click += (s, args) => Application.Exit();
+            menu.Items.Add(exitItem);
+
+            menu.Show(screenPosition);
+        }
+
+        private void ShowAbout()
+        {
+            MessageBox.Show(
+                "Công Cụ Gỡ Cài BKAV\n" +
+                "Gỡ cài đặt và dọn dẹp triệt để BKAV Pro / BKAV Corporation\n" +
+                "khỏi thư mục, registry, shortcut khởi động và biến môi trường.",
+                "Giới thiệu",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+
+        // ════════════════════════════════════════════════════════════════════════
+        //  KIỂM TRA CẬP NHẬT
+        // ════════════════════════════════════════════════════════════════════════
+
+        /// <summary>Kiểm tra bản mới ở luồng nền; không chặn UI, lỗi mạng bị bỏ qua lặng lẽ.</summary>
+        private async void CheckForUpdatesInBackground(bool showUpToDateMessage)
+        {
+            UpdateChecker.UpdateInfo info = null;
+            try
+            {
+                info = await UpdateChecker.CheckAsync().ConfigureAwait(true);
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"CleanEnvironmentVariables Error: {ex.Message}");
+                Debug.WriteLine($"CheckForUpdatesInBackground: {ex.Message}");
+                if (showUpToDateMessage)
+                    MessageBox.Show("Không thể kiểm tra cập nhật (lỗi mạng hoặc máy chủ).",
+                        "Kiểm tra cập nhật", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
-        }
 
-        private void lblwin_Click(object sender, EventArgs e)
-        {
-            // Show menu with options
-            using (ContextMenuStrip menu = new ContextMenuStrip())
+            if (this.IsDisposed) return;
+
+            var currentVersion = Assembly.GetExecutingAssembly().GetName().Version;
+
+            if (info != null && info.Version > currentVersion)
             {
-                // Option 1: Registry Finder
-                var finderItem = new ToolStripMenuItem("🔍 Registry Finder - Scan All BKAV Entries");
-                finderItem.Click += (s, args) => OpenRegistryFinder();
-                menu.Items.Add(finderItem);
+                var result = MessageBox.Show(
+                    $"Đã có phiên bản mới: {info.TagName}\n" +
+                    $"Phiên bản đang dùng: {currentVersion}\n\n" +
+                    "Mở trang tải về ngay bây giờ?",
+                    "Có bản cập nhật mới",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
 
-                menu.Items.Add(new ToolStripSeparator());
-
-                // Option 2: Registry Comparator
-                var comparatorItem = new ToolStripMenuItem("📊 Registry Comparator - Before/After Analysis");
-                comparatorItem.Click += (s, args) => OpenRegistryComparator();
-                menu.Items.Add(comparatorItem);
-
-                menu.Show(System.Windows.Forms.Cursor.Position);
+                if (result == DialogResult.Yes)
+                {
+                    try { Process.Start(info.HtmlUrl); }
+                    catch (Exception ex) { Debug.WriteLine($"Open release page: {ex.Message}"); }
+                }
             }
-        }
-
-        private void OpenRegistryFinder()
-        {
-            using (var finder = new RegistryFinderForm())
+            else if (showUpToDateMessage)
             {
-                finder.ShowDialog();
-            }
-        }
-
-        private void OpenRegistryComparator()
-        {
-            using (var comparator = new RegistryComparatorForm())
-            {
-                comparator.ShowDialog();
+                MessageBox.Show($"Bạn đang dùng phiên bản mới nhất ({currentVersion}).",
+                    "Kiểm tra cập nhật", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
     }

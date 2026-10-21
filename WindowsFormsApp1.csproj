@@ -8,10 +8,11 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>frmbkavuninstaller</RootNamespace>
     <AssemblyName>BKAV Pro Uninstaller Tool</AssemblyName>
-    <TargetFrameworkVersion>v4.6</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <Deterministic>true</Deterministic>
+    <TargetFrameworkProfile />
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -64,12 +65,7 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="RegistryComparatorForm.cs">
-      <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="RegistryFinderForm.cs">
-      <SubType>Form</SubType>
-    </Compile>
+    <Compile Include="UpdateChecker.cs" />
     <EmbeddedResource Include="Form1.resx">
       <DependentUpon>Form1.cs</DependentUpon>
     </EmbeddedResource>
@@ -84,6 +80,8 @@
     <None Include="BUGFIXES.md" />
     <None Include="CHANGELOG.md" />
     <None Include="CONTRIBUTING.md" />
+    <None Include="GITHUB_RELEASE_TEMPLATE.md" />
+    <None Include="GIT_RELEASE_INSTRUCTIONS.md" />
     <None Include="INSTALLATION.md" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
@@ -99,13 +97,14 @@
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
+    <None Include="RELEASE_NOTES_v1.1.0.md" />
+    <None Include="RELEASE_SUMMARY.md" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="bin\Debug\android-chrome-512x512.png" />
-    <None Include="bin\Debug\favicon-32x32.png" />
+
     <Content Include="bkav - after.txt" />
     <Content Include="bkav - before.txt" />
     <Content Include="bkav.txt" />
